@@ -115,29 +115,77 @@ class WallaceMultiplier extends Module {
   println("Create arrays for the outputs")
   val stage2 = ListBuffer[ListBuffer[Bool]]()
   for (ppw <- 0 to 7) // Create a list of bits grouped by weight
-    stage1.append(ListBuffer[Bool]())
+    stage2.append(ListBuffer[Bool]())
   
-  // TODO
+  println("Wire Half/Full adders")
+  for ( ppw <- 0 to 6 ) { // 'ppw': log2 of the partial prodcut weight: 1, 2, 4, 8, 16, 32, 64
+    val insize = stage1(ppw).length
+    val next_weight = ppw+1
+    print(s"$insize bits of weight ${pow(2, ppw)} from stage 1 => ")
+    var remaining_bits = insize
+    while (remaining_bits != 0) {
+      if (remaining_bits >= 3) {
+        print("FA ")
+        val inst_fa = Module(new FullAdder())
+        inst_fa.i_a := stage1(ppw)(remaining_bits-1)
+        inst_fa.i_b := stage1(ppw)(remaining_bits-2)
+        inst_fa.i_c := stage1(ppw)(remaining_bits-3)
+        stage2(ppw).append(inst_fa.o_o)
+        stage2(next_weight).append(inst_fa.o_c) // wire carry to the next weight
+        remaining_bits -= 3 // A Full Adder "consumes" 3 inputs
+      } else if (remaining_bits >= 2) {
+        print("HA ")
+        val inst_ha = Module(new HalfAdder())
+        inst_ha.i_a := stage1(ppw)(remaining_bits-1)
+        inst_ha.i_b := stage1(ppw)(remaining_bits-2)
+        stage2(ppw).append(inst_ha.o_o)
+        stage2(next_weight).append(inst_ha.o_c) // wire carry to the next weight
+        remaining_bits -= 2 // A Half Adder "consumes" 2 inputs
+      } else if (remaining_bits >= 2) {
+      } else { // remaining_bits == 1
+        // Directly wire the remaining bit to stage 1's outputs
+        print("- ")
+        stage2(ppw).append(stage1(ppw)(remaining_bits-1))
+        remaining_bits -= 1 // consume 1 bit
+      }
+    }
+    println("")
+  }
 
   // Debugging prompt
   println("Stage 2's output:")
-  var count = 0
+  count = 0
   for (tt <- stage2) {
     println(s"Index $count (Weight ${pow(2, count)}): ${tt.length}-bit")
     count += 1
   }
 
   println("** Stage 3 **")
-  println("-> Final addition")
-  // TODO
+  val ope_a = Wire(Vec(8, Bool())) // Operand A for the addition
+  val ope_b = Wire(Vec(8, Bool())) // Operand B for the addition
+  println("-> Wire operands")
+  for (i <- 0 to 7) { // Bits of a certain weight
+      ope_a(i) := stage2(i)(0).asBool
+  }
+  for (i <- 0 to 7) { // Bits of a certain weight
+    if (stage2(i).length == 2) {
+      ope_b(i) := stage2(i)(1).asBool
+    } else if (stage2(i).length == 1) {
+      ope_b(i) := 0.B 
+    } else {
+      println("Error: Too many/Too Few bits for the final addition, expecting 1 or 2 bits for each weight")
+      throw new Exception("Generator error")
+    }
+  }
 
-  // Final addition
-  //io.o_c := Cat(io.i_a, io.i_b)
-  //io.o_c := stage0(0).asUInt
-  io.o_c := stage1(0)(0).asUInt
+  println("-> Final addition")
+  // Final addition without width expansion
+  io.o_c := ope_a.asUInt +% ope_b.asUInt
 }
 
 // Generate the Verilog code
+// To run in sbt:
+// runMain WallaceMultiplierMain
 object WallaceMultiplierMain extends App {
   println("Generating the Wallace Multiplier hardware")
   (new chisel3.stage.ChiselStage).emitVerilog(new WallaceMultiplier(), Array("--target-dir", "generated"))
