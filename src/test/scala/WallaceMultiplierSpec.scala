@@ -4,6 +4,7 @@ import chiseltest._
 import chisel3._
 
 // In `sbt` type: testOnly WallaceMultiplierSpec
+// testOnly WallaceMultiplierSpec -- -DwriteVcd=1
 class WallaceMultiplierSpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "WallaceMultiplier"
 
@@ -32,7 +33,7 @@ class WallaceMultiplierSpec extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
   it should "special case: 2x2" in {
-    test(new WallaceMultiplier()) { dut=>
+    test(new WallaceMultiplier()).withAnnotations(Seq(WriteVcdAnnotation)) { dut=>
       dut.io.i_a.poke(2.U)
       dut.io.i_b.poke(2.U)
       dut.reset.poke(true.B)

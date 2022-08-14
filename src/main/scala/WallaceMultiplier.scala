@@ -19,8 +19,8 @@ class FullAdder extends Module {
   val o_o = IO(Output(Bool()))
   val o_c = IO(Output(Bool()))
   val axb = i_a ^ i_b
-  o_c := axb ^ i_c
-  o_o := (i_a & i_b) | (i_c & axb)
+  o_o := axb ^ i_c
+  o_c := (i_a & i_b) | (i_c & axb)
 }
 
 // 4-bit multiplier using a Wallace Multiplier Tree
@@ -55,7 +55,7 @@ class WallaceMultiplier extends Module {
       }
     }
     println("")
-    stage0 += weights
+    stage0.append(weights)
   }
   // TODO Verify the generator: Sanity check: if i_a.getWigth == 4 then stage0(3).length == 4
 
