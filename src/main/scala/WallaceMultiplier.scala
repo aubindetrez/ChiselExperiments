@@ -24,7 +24,7 @@ class FullAdder extends Module {
 }
 
 // 4-bit multiplier using a Wallace Multiplier Tree
-class WallaceMultiplier extends Module {
+class WallaceMultiplier(val SIZE: Int = 4) extends Module {
   val io = IO(new Bundle {
     val i_a = Input(UInt(4.W))
     val i_b = Input(UInt(4.W))
