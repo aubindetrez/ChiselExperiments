@@ -1,3 +1,4 @@
 **/target
 test_run_dir/
 generated/
+.bsp
