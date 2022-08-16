@@ -24,19 +24,30 @@ class FullAdder extends Module {
 }
 
 
-/**
- * `DIM`: DIM(0) contains how many bits of weight 1 (2**1) is in the input
- */
-class StageInterface(val DIM: Seq[Int]) extends Bundle {
-  // scala> val DIM: Seq[Int] = Seq(1, 2, 3, 1)
-  // scala> val list = DIM.map(nw => Vec(nw, Bool()))
-  // val list: Seq[chisel3.Vec[chisel3.Bool]] = List(Bool[1], Bool[2], Bool[3], Bool[1])
+/** A 2-D array of bits used by the Wallace Multiplier
+  * `DIM`: DIM(N) contains how many bits of weight 2**N have to be represented
+  * [[
+     // For a given 'DIM' parameter
+     val DIM = TreeDim(1, 2, 3, 1)
+     val list = DIM.map(nw => Vec(nw, Bool()))
+     // Generates a List of Vec for each weight.
+     // 1-bit for weight 1
+     // 2-bit for weight 2
+     // 3-bit for weight 4
+     // 1-bit for weight 8
+     // val list: Seq[chisel3.Vec[chisel3.Bool]] = List(Bool[1], Bool[2], Bool[3], Bool[1])
+  * ]]
+  */
+class StageInterface(val DIM: WallaceMultiplier.TreeDim) extends Bundle {
   // Vec can only hold the same type / width -> Use MixedVec instead
   val list: chisel3.util.MixedVec[chisel3.Vec[chisel3.Bool]] = MixedVec( DIM.map(nw => Vec(nw, Bool())) )
- 
+
   def length = list.length
+
   def getVecForWeight(weight: Int) : Vec[Bool] = list(weight)
+
   def setWeight(i: Int, vec: Vec[Bool]) = list(i) := vec
+
   // Return true if there is 1 or 2 bits per weight
   def isFinal : Boolean = {
     for (vec <- list) {
@@ -44,7 +55,10 @@ class StageInterface(val DIM: Seq[Int]) extends Bundle {
     }
     return true
   }
-  def toListDim : Seq[Int] = DIM
+
+  def toListDim : WallaceMultiplier.TreeDim = DIM
+
+  // Take the first bit for every weight and wire them together to make a UInt
   def toOperantA : UInt = {
     val ope_a = Wire(Vec(this.length, Bool()))
     var i = 0
@@ -59,6 +73,8 @@ class StageInterface(val DIM: Seq[Int]) extends Bundle {
     }
     return ope_a.asUInt
   }
+
+  // Take the second bit for every weight (or 1'b0) and wire them together to make a UInt
   def toOperantB : UInt = {
     val ope_b = Wire(Vec(this.length, Bool()))
     var i = 0
@@ -66,6 +82,7 @@ class StageInterface(val DIM: Seq[Int]) extends Bundle {
       if (bit.length == 2) {
         ope_b(i) := bit(1).asBool
       } else if (bit.length == 1) {
+        // No second bit for that weight -> use 1'b0
         ope_b(i) := 0.B
       } else {
         println("Error: Too many/Too Few bits for the final addition, expecting 1 or 2 bits for each weight")
@@ -76,8 +93,9 @@ class StageInterface(val DIM: Seq[Int]) extends Bundle {
     return ope_b.asUInt
   }
 }
+// Static functions for 'StageInterface'
 object StageInterface {
-  def connect(from: ListBuffer[ListBuffer[Bool]], to: StageInterface) = {
+  def connect(from: WallaceMultiplier.Mut2DBoolTree, to: StageInterface) = {
     if ( from.length != to.length ) {
         println("Error: Try to connect Two stages with different size")
         throw new Exception("Cannot connect 2 stages of different size")
@@ -112,18 +130,28 @@ object StageInterface {
 }
 
 /** Reduce Stages are in a separate module,
- * it makes hierarchy easier to understand when debugging vcd traces
- * `INSIZE`: How many bits of different weight are in the input
- * `INDIM`: INDIM(0) contains how many bits of weight 1 (2**0) are in the input
- * INDIM(1) contains how many bits of weight 2(2**1) are in the input
+ *  it makes hierarchy easier to understand when debugging vcd traces
+ *  `INDIM`: INDIM(N) contains how many bits of weight 2**N are in the input
+ *  
+ *  Example for the first reduce stage of a 4x4 multiplier
+ *  Parameter:
+ *   [[val DIM = TreeDim(1, 2, 3, 1)]]
+ *  Input:
+ *   MixedVec(Vec(a0b0.B), Vec(a0b1.B, a1b0.B), Vec(a0b2.B, a1b1.B, a2b0.B), ...
+ *  Principle of operation:
+ *  if for a given weight the input contains 2-bit -> feed them to a HalfAdder
+ *  else if it contains 3-bit -> feed them to a FullAdder
+ *  Output:
+ *  MixedVec(Vec(a0b0.B), Vec(Result_HA(a0b1, a1b0)), Vec(Carry_HA(a0b1, a1b0), Result_FA(a0b2...
  */
-class ReduceStage(val INDIM: Seq[Int]) extends Module {
+class ReduceStage(val INDIM: WallaceMultiplier.TreeDim) extends Module {
   val i_prev_stage = IO(Input(new StageInterface(INDIM))) // Previous stage: a 2D weight matrix
 
   println("** Reduce Stage **")
-  val current_stage = ListBuffer[ListBuffer[Bool]]()
+  val current_stage = WallaceMultiplier.Mut2DBoolTree()
 
-  // Accound for the carry bit if there is more than 1 MSB bit
+  // The output vector is 1-bit bigger than the input to accound for the carry bit if there is
+  // more than 1 MSB bit
   val size_output = INDIM.length + ( if (INDIM(INDIM.length-1) < 2) 0 else 1 )
   for (ppw <- 0 until size_output) // Create a list of bits grouped by weight
     current_stage.append(ListBuffer[Bool]())
@@ -164,11 +192,7 @@ class ReduceStage(val INDIM: Seq[Int]) extends Module {
   }
   
   // Get Ouput's dimension
-  val outdim = WallaceMultiplier.list2listlength(current_stage)
-  //val outdim = ListBuffer[Int]()
-  //for (bits <- current_stage) {
-  //  outdim.append(bits.length)
-  //}
+  val outdim = WallaceMultiplier.getListBufferDim(current_stage)
 
   val o_2dw = IO(Output(new StageInterface(outdim))) // 2D weight matrix
 
@@ -203,7 +227,7 @@ class WallaceMultiplier(val SIZE: Int = 4) extends Module {
   // Weight 16: a1.b3 a2.b2 a3.b1
   // Weight 32: a2.b3 a3.b2
   // Weight 64: a3.b3
-  val stage0 = ListBuffer[ListBuffer[Bool]]() // It is easier to use a mutable list
+  val stage0 = WallaceMultiplier.Mut2DBoolTree() // It is easier to use a mutable list
   for (ppw <- 0 to 6) // Create a list of bits grouped by weight
     stage0.append(ListBuffer[Bool]())
   println("** Stage 0 **")
@@ -233,7 +257,7 @@ class WallaceMultiplier(val SIZE: Int = 4) extends Module {
   // Weight 16: FA(a1.b3 a2.b2 a3.b1) [carry is of weight 32]
   // Weight 32: HA(a2.b3 a3.b2) [carry is of weight 64]
   // Weight 64: a3.b3
-  val inst_stage1 = Module(new ReduceStage(WallaceMultiplier.list2listlength(stage0)))
+  val inst_stage1 = Module(new ReduceStage(WallaceMultiplier.getListBufferDim(stage0)))
   StageInterface.connect(stage0, inst_stage1.i_prev_stage)
 
   // Stage 2: Reduce
@@ -266,8 +290,14 @@ class WallaceMultiplier(val SIZE: Int = 4) extends Module {
 }
 
 object WallaceMultiplier {
-  // Convert 2D ListBuffer to a List of Length (of each column)
-  def list2listlength (in: ListBuffer[ListBuffer[Bool]]) : Seq[Int] = Seq.tabulate(in.length)(n => in(n).length)
+  type Mut2DBoolTree = ListBuffer[ListBuffer[Bool]]
+  def Mut2DBoolTree(xs: ListBuffer[Bool]*) = ListBuffer(xs: _*)
+
+  type TreeDim = Seq[Int]
+  def TreeDim(xs: Int*) = Seq(xs: _*)
+
+  // Convert 2D Boolean Tree to a List of Length (of each column)
+  def getListBufferDim (in: WallaceMultiplier.Mut2DBoolTree) : WallaceMultiplier.TreeDim = Seq.tabulate(in.length)(n => in(n).length)
 }
 
 // Generate the Verilog code
