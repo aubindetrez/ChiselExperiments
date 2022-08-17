@@ -144,27 +144,28 @@ object StageInterface {
  *  Output:
  *  MixedVec(Vec(a0b0.B), Vec(Result_HA(a0b1, a1b0)), Vec(Carry_HA(a0b1, a1b0), Result_FA(a0b2...
  */
-class ReduceStage(val INDIM: WallaceMultiplier.TreeDim) extends Module {
+class ReduceStage(val INDIM: WallaceMultiplier.TreeDim, val DEBUG: Boolean = false) extends Module {
   val i_prev_stage = IO(Input(new StageInterface(INDIM))) // Previous stage: a 2D weight matrix
+  val INSIZE = i_prev_stage.length
 
-  println("** Reduce Stage **")
+  if (DEBUG) println("** Reduce Stage **")
   val current_stage = WallaceMultiplier.Mut2DBoolTree()
 
   // The output vector is 1-bit bigger than the input to accound for the carry bit if there is
   // more than 1 MSB bit
-  val size_output = INDIM.length + ( if (INDIM(INDIM.length-1) < 2) 0 else 1 )
+  val size_output = INSIZE + ( if (INDIM(INDIM.length-1) < 2) 0 else 1 )
   for (ppw <- 0 until size_output) // Create a list of bits grouped by weight
     current_stage.append(ListBuffer[Bool]())
 
-  println("Wire Half/Full adders")
-  for ( ppw <- 0 to 6 ) { // 'ppw': log2 of the partial prodcut weight: 1, 2, 4, 8, 16, 32, 64
+  if (DEBUG) println("Wire Half/Full adders")
+  for ( ppw <- 0 until INSIZE ) { // 'ppw': log2 of the partial prodcut weight: 1, 2, 4, 8, 16, 32, 64
     val insize = INDIM(ppw)
     val next_weight = ppw+1
-    print(s"$insize bits of weight ${pow(2, ppw)} from stage 0 => ")
+    if (DEBUG) print(s"$insize bits of weight ${pow(2, ppw)} from the previous stage => ")
     var remaining_bits = insize
     while (remaining_bits != 0) {
       if (remaining_bits >= 3) {
-        print("FA ")
+        if (DEBUG) print("FA ")
         val inst_fa = Module(new FullAdder())
         inst_fa.i_a := i_prev_stage.getVecForWeight(ppw)(remaining_bits-1)
         inst_fa.i_b := i_prev_stage.getVecForWeight(ppw)(remaining_bits-2)
@@ -173,7 +174,7 @@ class ReduceStage(val INDIM: WallaceMultiplier.TreeDim) extends Module {
         current_stage(next_weight).append(inst_fa.o_c) // wire carry to the next weight
         remaining_bits -= 3 // A Full Adder "consumes" 3 inputs
       } else if (remaining_bits >= 2) {
-        print("HA ")
+        if (DEBUG) print("HA ")
         val inst_ha = Module(new HalfAdder())
         inst_ha.i_a := i_prev_stage.getVecForWeight(ppw)(remaining_bits-1)
         inst_ha.i_b := i_prev_stage.getVecForWeight(ppw)(remaining_bits-2)
@@ -183,12 +184,12 @@ class ReduceStage(val INDIM: WallaceMultiplier.TreeDim) extends Module {
       } else if (remaining_bits >= 2) {
       } else { // remaining_bits == 1
         // Directly wire the remaining bit to stage 1's outputs
-        print("- ")
+        if (DEBUG) print("- ")
         current_stage(ppw).append(i_prev_stage.getVecForWeight(ppw)(remaining_bits-1))
         remaining_bits -= 1 // consume 1 bit
       }
     }
-    println("")
+    if (DEBUG) println("")
   }
   
   // Get Ouput's dimension
@@ -197,27 +198,28 @@ class ReduceStage(val INDIM: WallaceMultiplier.TreeDim) extends Module {
   val o_2dw = IO(Output(new StageInterface(outdim))) // 2D weight matrix
 
   // Convert mutable ListBuffer[Bool] to fixed-size Vec[Bool]
-  println("ReduceStage: Wire output")
+  if (DEBUG) println("ReduceStage: Wire output")
   for ( i <- 0 until current_stage.length) {
-    print(s"Weight ${pow(2, i)}: ")
+    if (DEBUG) print(s"Weight ${pow(2, i)}: ")
     val bools = current_stage(i)
-    print(s"${bools.length}-bit")
+    if (DEBUG) print(s"${bools.length}-bit")
     val w_2dw = Wire(Vec(bools.length, Bool()))
     assert (w_2dw.length == bools.length)
     for (j <- 0 until bools.length) {
       w_2dw(j) := bools(j)
     }
     o_2dw.setWeight(i, w_2dw)
-    println()
+    if (DEBUG) println()
   }
 }
 
-// 4-bit multiplier using a Wallace Multiplier Tree
-class WallaceMultiplier(val SIZE: Int = 4) extends Module {
+// multiplier using a Wallace Multiplier Tree
+class WallaceMultiplier(val SIZE: Int = 8, val DEBUG: Boolean = false) extends Module {
+  val OUTSIZE = 2*SIZE
   val io = IO(new Bundle {
-    val i_a = Input(UInt(4.W))
-    val i_b = Input(UInt(4.W))
-    val o_c = Output(UInt(8.W))
+    val i_a = Input(UInt(SIZE.W))
+    val i_b = Input(UInt(SIZE.W))
+    val o_c = Output(UInt(OUTSIZE.W))
   })
   // Stage 0: Group inputs by weight
   // Weight 1:  a0.b0
@@ -227,27 +229,30 @@ class WallaceMultiplier(val SIZE: Int = 4) extends Module {
   // Weight 16: a1.b3 a2.b2 a3.b1
   // Weight 32: a2.b3 a3.b2
   // Weight 64: a3.b3
+  val STAGE0_SIZE = 2*SIZE-1
   val stage0 = WallaceMultiplier.Mut2DBoolTree() // It is easier to use a mutable list
-  for (ppw <- 0 to 6) // Create a list of bits grouped by weight
+  for (ppw <- 0 until STAGE0_SIZE) // Create a list of bits grouped by weight
     stage0.append(ListBuffer[Bool]())
-  println("** Stage 0 **")
-  println("Grouping partial products by weight:")
-  for ( ppw <- 0 to 6 ) { // 'ppw': log2 of the partial prodcut weight: 1, 2, 4, 8, 16, 32, 64
-    print(s" - Weight ${pow(2, ppw)}: ")
+
+  if (DEBUG) {
+    println("** Stage 0 **")
+    println("Grouping partial products by weight:")
+  }
+  for ( ppw <- 0 until STAGE0_SIZE) {
+    if (DEBUG) print(s" - Weight ${pow(2, ppw)}: ")
     for ( wa <- 0 to io.i_a.getWidth-1) { // 'wa': 2**wa is the weight of bit 'i_a(wa)'
       for ( wb <- 0 to io.i_b.getWidth-1) { // 'wb': same as 'wa'
-        // Group Partial products by their weight 'ppw' 
+        // Group Partial products by their weight
         if (wa+wb == ppw) {
-          print(s"a$wa.b$wb ")
+          if (DEBUG) print(s"a$wa.b$wb ")
           stage0(ppw).append(io.i_a(wa) & io.i_b(wb))
         }
       }
     }
-    println("")
+    if (DEBUG) println("")
   }
   // TODO formal
   // TODO Verify the generator: Sanity check: if i_a.getWigth == 4 then stage0(3).length == 4
-  println(stage0.getClass)
 
   // Stage 1: Reduce
   // Weight 1:  a0.b0
@@ -257,8 +262,6 @@ class WallaceMultiplier(val SIZE: Int = 4) extends Module {
   // Weight 16: FA(a1.b3 a2.b2 a3.b1) [carry is of weight 32]
   // Weight 32: HA(a2.b3 a3.b2) [carry is of weight 64]
   // Weight 64: a3.b3
-  val inst_stage1 = Module(new ReduceStage(WallaceMultiplier.getListBufferDim(stage0)))
-  StageInterface.connect(stage0, inst_stage1.i_prev_stage)
 
   // Stage 2: Reduce
   // Weight 1:  a0.b0
@@ -268,12 +271,26 @@ class WallaceMultiplier(val SIZE: Int = 4) extends Module {
   // Weight 16: HA(Carry Res)
   // Weight 32: HA(Carry Res)
   // Weight 64: HA(Carry a3.b3)
-  val inst_stage2 = Module(new ReduceStage(inst_stage1.o_2dw.toListDim))
-  StageInterface.connect(inst_stage1.o_2dw, inst_stage2.i_prev_stage)
+  
+  val stage0_int = Wire(new StageInterface(WallaceMultiplier.getListBufferDim(stage0)))
+  StageInterface.connect(stage0, stage0_int)
 
-  assert (inst_stage2.o_2dw.isFinal)
+  var stage_count = 1
+  var dim = WallaceMultiplier.getListBufferDim(stage0)
+  var reduce_input: StageInterface = stage0_int
+  var is_stage_final = false
+  // Generate an arbitrary number of stage until the tree only contains 1 or 2-bit per weight
+  while (!is_stage_final) {
+    if (DEBUG) println(s"**STAGE $stage_count**")
+    val inst_reduce_stage = Module(new ReduceStage(dim, DEBUG))
+    StageInterface.connect(reduce_input, inst_reduce_stage.i_prev_stage)
+    dim = inst_reduce_stage.o_2dw.toListDim
+    reduce_input = inst_reduce_stage.o_2dw
+    is_stage_final = inst_reduce_stage.o_2dw.isFinal
+    stage_count += 1
+  }
 
-  // Stage 3: Addition
+  // Stage 3: Final Addition
   //              A      B
   // Weight 1:   a0.b0   0
   // Weight 2:   Res     0
@@ -284,9 +301,9 @@ class WallaceMultiplier(val SIZE: Int = 4) extends Module {
   // Weight 64:  Carry   Res
   // Weight 128: Carry   0
   // TODO Use a smaller adder and ignore bits of weight 1..4
-  println("-> Final addition")
+  if (DEBUG) println("** Final Stage: addition **")
   // Final addition without width expansion
-  io.o_c := inst_stage2.o_2dw.toOperantA +% inst_stage2.o_2dw.toOperantB
+  io.o_c := reduce_input.toOperantA +% reduce_input.toOperantB
 }
 
 object WallaceMultiplier {
@@ -305,5 +322,5 @@ object WallaceMultiplier {
 // runMain WallaceMultiplierMain
 object WallaceMultiplierMain extends App {
   println("Generating the Wallace Multiplier hardware")
-  (new chisel3.stage.ChiselStage).emitVerilog(new WallaceMultiplier(), Array("--target-dir", "generated"))
+  (new chisel3.stage.ChiselStage).emitVerilog(new WallaceMultiplier(DEBUG=true), Array("--target-dir", "generated"))
 }
